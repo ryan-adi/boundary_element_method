@@ -1,7 +1,7 @@
-from common_modules import np
+from common_modules import np, nb
 from .shape_function import NiX, NigradX, NiXDiscSurf
 
-
+# @nb.njit
 def EvalDecisionCriterion(nodesPerElem,coordElemNodes,coordCollocPoint): 
     """
     Evaluate the center-point of the element
@@ -18,6 +18,7 @@ def EvalDecisionCriterion(nodesPerElem,coordElemNodes,coordCollocPoint):
     
     return D
 
+# @nb.njit
 def NumberOfGaussPoints(D): 
     """
     Decide on number of Gauss points for integration on (non-singular)
@@ -55,40 +56,41 @@ def polarTrafoTri(etaCP,etaGP,numTri):
     etaGPx,etaGPy = [*etaGP]
     
     # height of triangles (distances of the singular point to the edges of quad.)
-    H = np.abs([etaCPy+1,1-etaCPx,1-etaCPy,etaCPx+1])
+    height = np.abs([etaCPy+1,1-etaCPx,1-etaCPy,etaCPx+1])
     # angles in the corner of the triangle 
     # based on angles defined in S4 slide 8 
     thetaList = np.zeros((5,),dtype=float)              # initialize
-    thetaList[0] = -np.pi + np.arctan(H[0]/H[3])
-    thetaList[1] = - np.arctan(H[0]/H[1])
-    thetaList[2] = np.arctan(H[2]/H[1])
-    thetaList[3] = np.pi - np.arctan(H[2]/H[3])
-    thetaList[4] = np.pi + np.arctan(H[0]/H[3])
+    thetaList[0] = -np.pi + np.arctan(height[0]/height[3])
+    thetaList[1] = - np.arctan(height[0]/height[1])
+    thetaList[2] = np.arctan(height[2]/height[1])
+    thetaList[3] = np.pi - np.arctan(height[2]/height[3])
+    thetaList[4] = np.pi + np.arctan(height[0]/height[3])
 
     #  linear interpolation of theta
     theta_min = thetaList[numTri] 
     theta_max = thetaList[numTri+1] 
-    theta = theta_min + (theta_max - theta_min) * (etaGPx+1) / 2        # see S4 slide 8
+    theta = theta_min + (theta_max - theta_min) * (etaGPx+1) / 2        
 
     #  linear interpolation of rho
     rho_min = 0                                           
-    rho_max = H[numTri] / np.sin(np.pi*(numTri/2)-theta)  # rho_max as function of H[numTri] and theta
-    rho = rho_min + (rho_max - rho_min) * (etaGPy+1) / 2  # see S4 slide 9
+    rho_max = height[numTri] / np.sin(np.pi*(numTri/2)-theta) 
+    rho = rho_min + (rho_max - rho_min) * (etaGPy+1) / 2  
     
     #  evaluation of triangle coordinates
     etaTri = np.array(etaCP+[rho*np.cos(theta),rho*np.sin(theta)])      
 
     #  determinant for triangle transformation
-    detQuadTri= rho                                             # see S4 slide 7
+    detQuadTri= rho                                             
 
     # determinante for backtransformation to quad. system
-    detTriQuad = abs(rho_max * (theta_max-theta_min)) / 4       # see S4 slide 10
+    detTriQuad = abs(rho_max * (theta_max-theta_min)) / 4       
     
     #  total determinant    
-    JdetTri = detQuadTri * detTriQuad                           # multiply both determinants
+    JdetTri = detQuadTri * detTriQuad                           
 
     return etaTri,JdetTri 
 
+# @nb.jit(parallel=True)
 def regularIntegration(A,B,conf,cp,el): 
     """
     regular integration routine to evaluate system matrices 
@@ -96,28 +98,27 @@ def regularIntegration(A,B,conf,cp,el):
     """
     elindices = A['elements'][el,:] # cont node ids of the current element
     elCoord = A['nodes'][elindices, :] # cont nodal coordinates of the current element
-    cpCoord = B['nodes'][cp,:] # cp coordinates
+    cpCoord = B['nodes'][cp,:] 
     relDist = EvalDecisionCriterion(A['numNodPerEl'],elCoord,cpCoord)
-    numGP = NumberOfGaussPoints(relDist) # get number of gauss points depending on relative distance
-    GP,w = np.polynomial.legendre.leggauss(numGP) # get gauss points and weights on standard interval -1,1
+    numGP = NumberOfGaussPoints(relDist) 
+    GP,w = np.polynomial.legendre.leggauss(numGP) 
 
     # initialize
     g_el = np.zeros((A['numNodPerEl'],1),dtype=complex)
     h_el = np.zeros((A['numNodPerEl'],1),dtype=complex)
     c_el = 0.
 
-    for m in range(numGP): # gauss point loop m
-        for n in range(numGP): # gauss point loop n
+    for m in nb.prange(numGP): # gauss point loop m
+        for n in nb.prange(numGP): # gauss point loop n
             
             eta = np.array([GP[n],GP[m]])
             weight1 = w[n]
             weight2 = w[m]
             shapeFunc = NiX(A['elTypesNum'][0], eta) # linear lagrangian polynomial 
-            GPcoord = np.matmul(shapeFunc.T,elCoord) # discontinuous nodal coordinates of the mapped element
+            GPcoord = np.matmul(shapeFunc.T, elCoord) # discontinuous nodal coordinates of the mapped element
 
-            # determinante
             shapeFuncDeriv = NigradX(A['elTypesNum'][0], eta)
-            J = np.matmul(shapeFuncDeriv.T,elCoord)
+            J = np.matmul(shapeFuncDeriv.T, elCoord)
             tvec1 = J[0, :] # tangential vector in cont nodes
             tvec2 = J[1, :]
             nvec = np.cross(tvec1,tvec2) # normal vector in cont nodes
@@ -128,8 +129,8 @@ def regularIntegration(A,B,conf,cp,el):
             r_vec = GPcoord[0]-cpCoord
             r = np.linalg.norm(r_vec)
             r_gradnGP = np.dot(r_vec/r,nvec_unit)
-            G = 1/(4*np.pi)*np.exp(1j*conf['k']*r)/r
-            G_gradnGP = G*(1j*conf['k']-1/r)*r_gradnGP
+            G = 1/(4*np.pi)*np.exp(1j*conf['waveNumber']*r)/r
+            G_gradnGP = G*(1j*conf['waveNumber']-1/r)*r_gradnGP
 
             # interpolation function       
             IntFunc = NiXDiscSurf(B['numNodPerEl'],conf['DiscAlpha'],conf['DiscIntOrder'],eta)
@@ -143,6 +144,7 @@ def regularIntegration(A,B,conf,cp,el):
 
     return g_el,h_el,c_el
 
+# @nb.jit(parallel=True)
 def singularIntegration(A,B,conf,cp,el,DOF,etaCP): 
     """
     Singular integration by using polar transformations. 
@@ -150,20 +152,19 @@ def singularIntegration(A,B,conf,cp,el,DOF,etaCP):
     elindices = A['elements'][el,:] # cont node ids of the current element
     elCoord = A['nodes'][elindices, :] # cont nodal coordinates of the current element
     cpCoord = B['nodes'][cp,:] # cp coordinates
-    numGP = 20 # set number of GP points to 20 for singular inegration
+    numGP = 20 # set number of GP points to 20 for singular integration
     GP,w = np.polynomial.legendre.leggauss(numGP) # get gauss points and weights on standard interval -1,1
     
     # initialize
     g_el = np.zeros((A['numNodPerEl'],1),dtype=complex)
     h_el = np.zeros((A['numNodPerEl'],1),dtype=complex)
     c_el = 0.
-    #  number triangles on (quadrilaterial) element
+    # number triangles on (quadrilaterial) element
     numTri = 4  
-    # : adapt the following code and implement loop structure
-    for i in range(numTri): # loop over triangles
-
-        for m in range(numGP): # gauss point loop m
-            for n in range(numGP): # gauss point loop n
+    # adapt the following code and implement loop structure
+    for i in nb.prange(numTri): # loop over triangles
+        for m in nb.prange(numGP): # gauss point loop m
+            for n in nb.prange(numGP): # gauss point loop n
 
                 etaGP = np.array([GP[n],GP[m]])
                 weight1 = w[n]
@@ -175,7 +176,6 @@ def singularIntegration(A,B,conf,cp,el,DOF,etaCP):
                 shapeFunc = NiX(A['elTypesNum'][0], etaTri) # linear lagrangian polynomial 
                 GPcoord = np.matmul(shapeFunc.T,elCoord) # discontinuous nodal coordinates of the mapped element
 
-                # determinante
                 shapeFuncDeriv = NigradX(A['elTypesNum'][0], etaTri)
                 J = np.matmul(shapeFuncDeriv.T,elCoord)
                 tvec1 = J[0, :] # tangential vector in cont nodes
@@ -188,8 +188,8 @@ def singularIntegration(A,B,conf,cp,el,DOF,etaCP):
                 r_vec = GPcoord-cpCoord
                 r = np.linalg.norm(r_vec)
                 r_gradnGP = np.dot(r_vec/r,nvec_unit)
-                G = 1/(4*np.pi)*np.exp(1j*conf['k']*r)/r
-                G_gradnGP = G*(1j*conf['k']-1/r)*r_gradnGP
+                G = 1/(4*np.pi)*np.exp(1j*conf['waveNumber']*r)/r
+                G_gradnGP = G*(1j*conf['waveNumber']-1/r)*r_gradnGP
 
                 # interpolation function       
                 IntFunc = NiXDiscSurf(B['numNodPerEl'],conf['DiscAlpha'],conf['DiscIntOrder'],etaTri)

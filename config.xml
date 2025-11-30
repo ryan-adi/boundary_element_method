@@ -1,0 +1,13 @@
+<data>
+    <speedOfSound>343</speedOfSound>
+    <density>1.2</density>
+
+    <IntExt>1</IntExt>
+    <vBC_x0>0.0001</vBC_x0>
+    
+    <DiscElementOrder>1</DiscElementOrder>
+    <DiscIntOrder>1</DiscIntOrder>
+    <DiscAlpha>0.42</DiscAlpha>
+
+    <frequency>100</frequency>
+</data>
